@@ -1,6 +1,8 @@
-# plop-tui
+# TUI-admin
 
 A terminal UI dashboard for generic CRUD operations against any REST API — think `lazygit` but for REST resources. Fully config-driven: no code changes needed to work with a new API.
+
+The base of this project was cloned from [plop-tui](https://github.com/ilaborie/plop-tui) by [ilaborie](https://github.com/ilaborie).
 
 Built with [ratatui](https://github.com/ratatui-org/ratatui) + Tokio in Rust.
 
@@ -11,10 +13,8 @@ Built with [ratatui](https://github.com/ratatui-org/ratatui) + Tokio in Rust.
 - Sidebar lists all models defined in `models.yaml`
 - Main panel fetches and displays records in a table
 - Create, edit, and delete records (each action is optional per model)
-- Multi-line text-area input with automatic overflow wrapping
 - Help overlay (`?`) with keybinding reference
 - Config-driven: swap `config.yaml` + `models.yaml` to target any REST API
-- Sensitive values (tokens, URLs) stay in `.env` — never hard-coded
 
 ---
 
@@ -23,10 +23,10 @@ Built with [ratatui](https://github.com/ratatui-org/ratatui) + Tokio in Rust.
 Requires [Rust](https://rustup.rs/) (stable).
 
 ```bash
-git clone https://github.com/your-username/plop-tui
-cd plop-tui
+git clone https://github.com/your-username/rest-tui-crud-admin
+cd rest-tui-crud-admin
 cargo build --release
-# binary is at ./target/release/plop-tui
+# binary is at ./target/release/est-tui-crud-admin
 ```
 
 ---
@@ -42,9 +42,9 @@ cp .env.example .env
 Edit `.env` and fill in your API credentials:
 
 ```env
-PLOP_BASE_URL=https://api.example.com
-PLOP_AUTH_TOKEN=your-token-here
-PLOP_BYPASS_TOKEN=your-bypass-token-here   # optional
+BASE_URL=https://api.example.com
+AUTH_TOKEN=your-token-here
+BYPASS_TOKEN=your-bypass-token-here   # optional
 ```
 
 **2. Create `config.yaml`**
@@ -57,10 +57,10 @@ cp config.example.yaml config.yaml
 Reference `.env` values with `${VAR_NAME}`:
 
 ```yaml
-base_url: "${PLOP_BASE_URL}"
+base_url: "${BASE_URL}"
 headers:
   Content-Type: "application/json"
-  Authorization: "Bearer ${PLOP_AUTH_TOKEN}"
+  Authorization: "Bearer ${AUTH_TOKEN}"
 ```
 
 **3. Create `models.yaml`**
@@ -89,7 +89,7 @@ models:
 ```bash
 cargo run
 # or
-./target/release/plop-tui
+./target/release/rest-tui-crud-admin
 ```
 
 ---
