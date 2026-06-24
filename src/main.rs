@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use eyre::Result;
-use plop_tui::api::handler::ApiServiceHandler;
-use plop_tui::app::App;
-use plop_tui::config::{load_app_config, load_model_configs};
-use plop_tui::io::handler::IoHandler;
-use plop_tui::io::IoEvent;
-use plop_tui::start_ui;
+use rest_tui_crud_admin::api::handler::ApiServiceHandler;
+use rest_tui_crud_admin::app::App;
+use rest_tui_crud_admin::config::{load_app_config, load_model_configs};
+use rest_tui_crud_admin::io::handler::IoHandler;
+use rest_tui_crud_admin::io::IoEvent;
+use rest_tui_crud_admin::start_ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {

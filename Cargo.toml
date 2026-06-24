@@ -1,10 +1,10 @@
 [package]
-name = "plop-tui"
+name = "rest-tui-crud-admin"
 version = "0.1.2"
-authors = ["igor <ilaborie@gmail.com>"]
+authors = ["igor <ilaborie@gmail.com>", "arvin <arvinsalehi99@gmail.com>", "Claude <noreply@anthropic.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/ilaborie/plop-tui"
+repository = "https://github.com/arvsa/rest-tui-crud-admin"
 
 [dependencies]
 log = "0.4"
