@@ -1,0 +1,13 @@
+/target
+
+# Runtime config — copy from *.example.* and fill in your values
+.env
+config.yaml
+models.yaml
+
+# Editor / OS / AI tooling
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.claude/

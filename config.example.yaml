@@ -1,0 +1,8 @@
+# Copy this file to config.yaml and adjust for your API.
+# Use ${VAR_NAME} to reference values from your .env file.
+
+base_url: "${BASE_URL}"
+headers:
+  Content-Type: "application/json"
+  Authorization: "Bearer ${PLOP_AUTH_TOKEN}"
+  # x-vercel-protection-bypass: "${PLOP_BYPASS_TOKEN}"

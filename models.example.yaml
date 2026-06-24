@@ -1,0 +1,18 @@
+# Copy this file to models.yaml and define your API resources.
+# Only `endpoint` is required. All action endpoints are optional —
+# omit any that your API doesn't support.
+
+models:
+  - name: "Posts"
+    endpoint: "/posts"             # GET — list records
+    create_endpoint: "/posts"      # POST — create a record
+    update_endpoint: "/posts/{id}" # PUT  — update by id  (omit if not supported)
+    delete_endpoint: "/posts/{id}" # DELETE — delete by id (omit if not supported)
+    id_field: "id"
+    display_field: "title"
+    fields: ["title", "body"]      # form fields for create/edit (omit to auto-detect)
+
+  - name: "Users"
+    endpoint: "/users"
+    id_field: "id"
+    display_field: "name"
