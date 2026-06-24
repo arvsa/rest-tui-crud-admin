@@ -8,54 +8,73 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build                          # build
 cargo run                            # run the TUI
 cargo test                           # run all tests
+cargo test <test_name>               # run a single test
 cargo fmt --all                      # format (uses rustfmt.toml: Module-level imports, StdExternalCrate grouping)
 cargo fmt --all -- --check           # check formatting without applying
 cargo clippy -- -D warnings          # lint (CI treats warnings as errors)
 ```
 
+## Configuration
+
+The app is config-driven via two YAML files loaded at startup:
+
+- **`config.yaml`** (from `config.example.yaml`) — `base_url` + `headers` map. Both files support `${VAR_NAME}` placeholders expanded from the environment (loaded via `.env` by `dotenvy`).
+- **`models.yaml`** (from `models.example.yaml`) — list of `ModelConfig` entries, each defining a REST resource: `name`, `endpoint` (GET list), optional `create_endpoint`, `update_endpoint`, `delete_endpoint`, `id_field`, `display_field`, and optional `fields` list.
+
+To add a new resource, add an entry to `models.yaml` — no code changes needed.
+
 ## Architecture
 
-This is a terminal UI app built with `tui-rs` + `crossterm` on Tokio async runtime. It manages two log lists (Logs, Music Logs) against a REST API, with a Settings page for configuring the base URL and HTTP headers at runtime.
+A terminal UI REST CRUD admin dashboard built with `ratatui` + `crossterm` on Tokio.
 
 ### Threading model
 
-Two concurrent tasks share `Arc<Mutex<App>>`:
+Two concurrent tasks share `Arc<tokio::sync::Mutex<App>>` (async mutex):
 
-1. **UI task** (`lib.rs::start_ui`) — renders frames and forwards input events to `App`. The lock is released between draw and the blocking `events.next().await` call so the IO task can write back results without starvation.
-2. **IO task** (`io/handler.rs::IoHandler`) — receives `IoEvent` messages over a `mpsc` channel, performs network I/O via `ApiServiceHandler`, then re-acquires the lock to call `App::finish_list_fetch` / `App::finish_post`.
+1. **UI task** (`lib.rs::start_ui`) — renders frames and forwards input events to `App`. The lock is released between draw and `events.next().await` so the IO task can write back results without starvation.
+2. **IO task** (`io/handler.rs::IoHandler`) — receives `IoEvent` messages over an `mpsc` channel, performs network I/O via `ApiServiceHandler`, then re-acquires the lock to call `App::finish_fetch` / `App::finish_post` / `App::finish_delete`.
 
-`App::dispatch` is the only way the UI side sends work to the IO side.
+`App::dispatch` / `App::dispatch_sync` are the only way the UI side sends work to the IO side.
 
 ### State machine
 
-`AppState` has two variants: `Init` and `Initialized`. After `IoEvent::Initialize` is handled, `App::initialized()` is called to transition to `Initialized`, which carries:
+`AppState` has two variants:
 
-- `nav: Vec<Page>` — a page stack; the last element is the active view.
-- `focus: Vec<Focus>` — a focus stack (Menu / LogsList / LogsPreview).
-- `metadata: SharedMetadata` — a `Arc<Mutex<HashMap<String, Arc<dyn Any>>>>` cache shared across pages; log lists are stored here keyed by `metadata_key` (e.g. `"logs"`, `"music_logs"`).
-- `settings: RequestSettings` — base URL + headers, editable from the Settings page.
+- `Init { config, models }` — initial state before the first `IoEvent::Initialize` is handled.
+- `Initialized` — carries:
+  - `models: Vec<ModelConfig>` — resource definitions from `models.yaml`
+  - `sidebar_cursor: usize` — selected model index
+  - `records: Vec<serde_json::Value>` — currently loaded records for the selected model
+  - `fetch_state: FetchState` — `Idle | Loading | Error(String)`
+  - `table_cursor: usize` — selected record index
+  - `popups: Vec<Popup>` — popup stack; last element is the active popup
+  - `active: ActiveComponent` — `Sidebar | Main | Popup`
+  - `request_config: RequestConfig` — base URL + headers (read-only after init; edit the YAML and restart to change)
 
-### Input → Command → IoEvent pipeline
+### Input → Command pipeline
 
-`keymap.rs` converts raw `Key` inputs into `Command` values in two passes:
-- `resolve_universal` — context-independent (quit, back, route hotkeys `1`–`3`)
-- `resolve_contextual(UiContext, Key)` — context-specific bindings
+`keymap.rs` converts `Key` inputs into `Command` values in two passes:
+- `resolve_universal(Key)` — context-independent: quit (`q` / `Ctrl+c`), toggle help (`?`)
+- `resolve_contextual(ActiveContext, Key)` — context-specific bindings
 
-`UiContext` is derived from the current focus and the active page's `sub_ui_context()` (which returns `LogEditor`, `LogSaving`, or `LogResult` when a modal is active).
+`ActiveContext` is derived from `active` + `popups.last()`:
+- `Sidebar` — `j/k/↑↓` navigate, `l/Enter` select and fetch
+- `Main` — `j/k` navigate, `h` back to sidebar, `r` refresh, `n` create, `e/Enter` edit, `d` delete
+- `Popup(Form)` — `Tab/BackTab` cycle fields, `Ctrl+s` submit, `Backspace` delete char, `Esc` close
+- `Popup(ConfirmDelete)` — `y/Y` confirm, `n/N/Esc` cancel
+- `Popup(Help)` — `?/Esc/q` close
 
-Commands are dispatched through `App::run_universal` / `App::run_contextual`, which may call `App::dispatch(IoEvent)` to queue network work.
+### Popups
 
-### Pages
-
-Each page implements `Draw` and handles its own command set:
-
-- **`LogListPage`** (`pages/log_list.rs`) — reused for both Logs and Music Logs via `LogListConfig` statics (`LOGS_CONFIG`, `MUSIC_LOGS_CONFIG`). Manages a `LogModal` state machine (None → Editor → Saving → Result). On failed create, dismissing the result modal restores the draft editor.
-- **`SettingsPage`** (`pages/settings.rs`) — edits `RequestSettings` (base URL row + header rows). Uses its own modal for cell-level text editing.
+`popup.rs` defines three variants pushed onto `AppState::popups`:
+- `Popup::Form { fields, mode: FormMode::Create | Edit, endpoint, .. }` — shared for create and edit workflows
+- `Popup::ConfirmDelete { record_display, record_id, endpoint }` — shown before DELETE
+- `Popup::Help` — keybinding reference
 
 ### API layer
 
-`ApiServiceHandler` (`api/handler.rs`) wraps `reqwest::Client` with a 10-second timeout. All requests read `base_url` and `headers` from `AppState::settings` at call time (not at startup), so settings changes take effect immediately on the next fetch/post.
+`ApiServiceHandler` (`api/handler.rs`) wraps `reqwest::Client` with a 10-second timeout per request. All four methods (`get_json`, `post_json`, `put_json`, `delete`) take `headers: &[(String, String)]` read from `AppState::request_config` at call time.
 
-### Routes and API paths
+`extract_records` in `io/handler.rs` normalises API responses: if the response is a JSON array it's returned directly; if it's an object, the first array-valued field is used (handles paginated wrappers).
 
-All route specs and API path constants live in `app/routing.rs`. When adding a new section, add a `RouteSpec` to `ROUTES`, a `RootRoute` variant, and corresponding path constants / page type.
+Endpoint templates with `{id}` (e.g. `/posts/{id}`) are resolved by `resolve_endpoint_with_id`; templates without `{id}` get the id appended as `/<id>`.
