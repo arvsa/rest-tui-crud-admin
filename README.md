@@ -13,6 +13,8 @@ Built with [ratatui](https://github.com/ratatui-org/ratatui) + Tokio in Rust.
 - Sidebar lists all models defined in `models.yaml`
 - Main panel fetches and displays records in a table
 - Create, edit, and delete records (each action is optional per model)
+- Vim-style modal editing in create/edit form fields (Normal/Insert modes, `hjkl` motions, word/line jumps, `dd`)
+- Pagination support (page, offset, or cursor style) with cached page-flip navigation (`L` / `H`)
 - Help overlay (`?`) with keybinding reference
 - Config-driven: swap `config.yaml` + `models.yaml` to target any REST API
 
@@ -123,16 +125,30 @@ cargo run
 | `n` | New record (if `create_endpoint` configured) |
 | `e` / `Enter` | Edit selected record (if `update_endpoint` configured) |
 | `d` | Delete selected record (if `delete_endpoint` configured) |
+| `L` | Next page (if `pagination` configured on the model) |
+| `H` | Previous page (served from cache, never re-fetches) |
 
 ### Create / Edit form
 
-| Key | Action |
-|-----|--------|
-| `Tab` | Next field |
-| `Shift+Tab` | Previous field |
-| `Enter` | Insert newline (text-area mode) |
-| `Ctrl+s` | Submit form |
-| `Esc` | Cancel and close |
+Form fields support vim-style modal editing. Forms open in **Insert** mode, so
+typing works immediately if you never touch the vim motions.
+
+| Key | Mode | Action |
+|-----|------|--------|
+| `Tab` / `Shift+Tab` | either | Next / previous field |
+| `Ctrl+s` | either | Submit form |
+| `Esc` | Insert | Switch to Normal mode |
+| `Esc` | Normal | Cancel and close the form |
+| `i` / `a` | Normal | Insert before / after cursor |
+| `I` / `A` | Normal | Insert at line start / end |
+| `o` | Normal | Open a new line below and insert |
+| `h` `j` `k` `l` / arrows | Normal | Move cursor left/down/up/right |
+| `w` / `b` | Normal | Jump to next / previous word |
+| `0` / `$` | Normal | Jump to line start / end |
+| `x` | Normal | Delete char under cursor |
+| `dd` | Normal | Delete current line |
+| `Enter` | Insert | Insert newline |
+| `Backspace` | Insert | Delete char before cursor |
 
 ### Delete confirm
 
@@ -166,6 +182,24 @@ Values support `${ENV_VAR}` substitution from `.env`.
 | `id_field` | yes | JSON field used as the record identifier |
 | `display_field` | yes | JSON field shown as the record label in the list |
 | `fields` | no | Ordered list of fields shown in create/edit forms. Auto-detected from records if omitted. |
+| `pagination` | no | Enables paginated fetching for this model's `endpoint`. See below. |
+
+#### `pagination` (optional, per model)
+
+Omit entirely for endpoints that return every record in one response (today's
+default behavior). When present, tag the block with a `style`:
+
+| Style | Extra fields | Use for |
+|-------|--------------|---------|
+| `page` | `page_param` (default `page`), `size_param` (default `per_page`), `page_size`, `first_page` (default `1`), `total_pages_field`, `has_more_field` | `?page=1&per_page=50`-style APIs |
+| `offset` | `offset_param` (default `offset`), `limit_param` (default `limit`), `limit` | `?offset=0&limit=100`-style APIs |
+| `cursor` | `cursor_param` (default `cursor`), `next_cursor_field` | APIs returning a next-page token in the response body |
+
+`total_pages_field`/`has_more_field`/`next_cursor_field` are dot-paths into the
+JSON response (e.g. `meta.next_cursor`). For `page` style, if both
+`total_pages_field` and `has_more_field` are omitted, pagination stops once a
+page returns fewer than `page_size` records. See `models.example.yaml` for
+worked examples of all three styles.
 
 ---
 

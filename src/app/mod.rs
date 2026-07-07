@@ -12,12 +12,12 @@ fn resolve_endpoint_with_id(template: &str, id: &str) -> String {
 }
 
 use keymap::{resolve_contextual, resolve_universal, ActiveContext, Command, PopupContext};
-use popup::{FormField, FormMode, Popup};
-use state::{ActiveComponent, AppState, FetchState};
+use popup::{EditMode, FormField, FormMode, Popup};
+use state::{ActiveComponent, AppState, FetchState, PaginationState};
 
 use crate::config::{AppConfig, ModelConfig};
 use crate::inputs::key::Key;
-use crate::io::{IoEvent, PostMode};
+use crate::io::{FetchListResult, IoEvent, PageState, PostMode};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AppReturn {
@@ -70,7 +70,11 @@ impl App {
                 ActiveComponent::Sidebar => ActiveContext::Sidebar,
                 ActiveComponent::Main => ActiveContext::Main,
                 ActiveComponent::Popup => match popups.last() {
-                    Some(Popup::Form { .. }) => ActiveContext::Popup(PopupContext::Form),
+                    Some(Popup::Form {
+                        edit_mode,
+                        pending_op,
+                        ..
+                    }) => ActiveContext::Popup(PopupContext::Form(*edit_mode, *pending_op)),
                     Some(Popup::ConfirmDelete { .. }) => {
                         ActiveContext::Popup(PopupContext::ConfirmDelete)
                     }
@@ -252,64 +256,236 @@ impl App {
                 }
             }
             Command::FormInput(c) => {
-                if let AppState::Initialized { ref mut popups, .. } = self.state {
-                    if let Some(Popup::Form {
-                        ref mut fields,
-                        ref focused_field,
-                        ..
-                    }) = popups.last_mut()
-                    {
-                        let idx = *focused_field;
-                        if let Some(field) = fields.get_mut(idx) {
-                            field.value.push(c);
-                        }
-                    }
-                }
+                self.with_focused_field(|field| field.insert_char(c));
             }
             Command::FormBackspace => {
-                if let AppState::Initialized { ref mut popups, .. } = self.state {
-                    if let Some(Popup::Form {
-                        ref mut fields,
-                        ref focused_field,
-                        ..
-                    }) = popups.last_mut()
-                    {
-                        let idx = *focused_field;
-                        if let Some(field) = fields.get_mut(idx) {
-                            field.value.pop();
-                        }
-                    }
-                }
+                self.with_focused_field(|field| field.backspace());
             }
             Command::FormSubmit => {
                 self.dispatch_post();
+            }
+            Command::VimEnterInsertBefore => {
+                self.set_edit_mode(EditMode::Insert);
+            }
+            Command::VimEnterInsertAfter => {
+                self.with_focused_field(|field| field.move_right());
+                self.set_edit_mode(EditMode::Insert);
+            }
+            Command::VimEnterInsertLineStart => {
+                self.with_focused_field(|field| field.line_start());
+                self.set_edit_mode(EditMode::Insert);
+            }
+            Command::VimEnterInsertLineEnd => {
+                self.with_focused_field(|field| field.line_end());
+                self.set_edit_mode(EditMode::Insert);
+            }
+            Command::VimOpenLineBelow => {
+                self.with_focused_field(|field| {
+                    field.line_end();
+                    field.insert_char('\n');
+                });
+                self.set_edit_mode(EditMode::Insert);
+            }
+            Command::VimExitInsert => {
+                self.set_edit_mode(EditMode::Normal);
+            }
+            Command::VimMoveLeft => {
+                self.with_focused_field(|field| field.move_left());
+            }
+            Command::VimMoveRight => {
+                self.with_focused_field(|field| field.move_right());
+            }
+            Command::VimMoveUp => {
+                self.with_focused_field(|field| field.move_up());
+            }
+            Command::VimMoveDown => {
+                self.with_focused_field(|field| field.move_down());
+            }
+            Command::VimWordForward => {
+                self.with_focused_field(|field| field.word_forward());
+            }
+            Command::VimWordBack => {
+                self.with_focused_field(|field| field.word_back());
+            }
+            Command::VimLineStart => {
+                self.with_focused_field(|field| field.line_start());
+            }
+            Command::VimLineEnd => {
+                self.with_focused_field(|field| field.line_end());
+            }
+            Command::VimDeleteChar => {
+                self.with_focused_field(|field| field.delete_char_under_cursor());
+            }
+            Command::VimPendingD => {
+                self.set_pending_op(Some('d'));
+            }
+            Command::VimDeleteLine => {
+                self.with_focused_field(|field| field.delete_current_line());
+                self.set_pending_op(None);
+            }
+            Command::VimClearPending => {
+                self.set_pending_op(None);
+            }
+            Command::LoadNextPage => {
+                self.fetch_next_page();
+            }
+            Command::LoadPrevPage => {
+                self.fetch_prev_page();
+            }
+        }
+    }
+
+    fn with_focused_field(&mut self, f: impl FnOnce(&mut FormField)) {
+        if let AppState::Initialized { ref mut popups, .. } = self.state {
+            if let Some(Popup::Form {
+                ref mut fields,
+                ref focused_field,
+                ..
+            }) = popups.last_mut()
+            {
+                let idx = *focused_field;
+                if let Some(field) = fields.get_mut(idx) {
+                    f(field);
+                }
+            }
+        }
+    }
+
+    fn set_edit_mode(&mut self, mode: EditMode) {
+        if let AppState::Initialized { ref mut popups, .. } = self.state {
+            if let Some(Popup::Form {
+                ref mut edit_mode, ..
+            }) = popups.last_mut()
+            {
+                *edit_mode = mode;
+            }
+        }
+    }
+
+    fn set_pending_op(&mut self, op: Option<char>) {
+        if let AppState::Initialized { ref mut popups, .. } = self.state {
+            if let Some(Popup::Form {
+                ref mut pending_op, ..
+            }) = popups.last_mut()
+            {
+                *pending_op = op;
             }
         }
     }
 
     fn fetch_selected_model(&mut self) {
-        let endpoint = match &self.state {
+        let selected = match &self.state {
             AppState::Initialized {
                 models,
                 sidebar_cursor,
                 ..
-            } => models.get(*sidebar_cursor).map(|m| m.endpoint.clone()),
+            } => models
+                .get(*sidebar_cursor)
+                .map(|m| (m.endpoint.clone(), m.pagination.clone())),
             _ => None,
         };
 
-        if let Some(endpoint) = endpoint {
+        if let Some((endpoint, pagination)) = selected {
             if let AppState::Initialized {
                 ref mut fetch_state,
                 ref mut table_cursor,
                 ref mut records,
+                ref mut pagination_state,
                 ..
             } = self.state
             {
                 *fetch_state = FetchState::Loading;
                 *table_cursor = 0;
                 *records = vec![];
+                *pagination_state = pagination.clone().map(|config| {
+                    Box::new(PaginationState {
+                        config,
+                        pages: vec![],
+                        current_index: 0,
+                        next: PageState::First,
+                        has_more: true,
+                    })
+                });
             }
-            self.dispatch_sync(IoEvent::FetchList { endpoint });
+            self.dispatch_sync(IoEvent::FetchList {
+                endpoint,
+                pagination,
+                page_state: PageState::First,
+                append: false,
+            });
+        }
+    }
+
+    /// `L` — advance a page. Moves to an already-cached page instantly; only
+    /// hits the network when advancing past the cached frontier.
+    fn fetch_next_page(&mut self) {
+        if let AppState::Initialized {
+            ref mut records,
+            ref mut table_cursor,
+            pagination_state: Some(ref mut ps),
+            ..
+        } = self.state
+        {
+            if ps.current_index + 1 < ps.pages.len() {
+                ps.current_index += 1;
+                *records = ps.pages[ps.current_index].clone();
+                *table_cursor = 0;
+                return;
+            }
+        }
+
+        let request = match &self.state {
+            AppState::Initialized {
+                models,
+                sidebar_cursor,
+                fetch_state,
+                pagination_state: Some(ps),
+                ..
+            } => {
+                if !ps.has_more
+                    || matches!(fetch_state, FetchState::Loading | FetchState::LoadingMore)
+                {
+                    None
+                } else {
+                    models
+                        .get(*sidebar_cursor)
+                        .map(|m| (m.endpoint.clone(), ps.config.clone(), ps.next.clone()))
+                }
+            }
+            _ => None,
+        };
+
+        if let Some((endpoint, config, page_state)) = request {
+            if let AppState::Initialized {
+                ref mut fetch_state,
+                ..
+            } = self.state
+            {
+                *fetch_state = FetchState::LoadingMore;
+            }
+            self.dispatch_sync(IoEvent::FetchList {
+                endpoint,
+                pagination: Some(config),
+                page_state,
+                append: true,
+            });
+        }
+    }
+
+    /// `H` — go back a page. Always served from the cache, never re-fetches.
+    fn fetch_prev_page(&mut self) {
+        if let AppState::Initialized {
+            ref mut records,
+            ref mut table_cursor,
+            pagination_state: Some(ref mut ps),
+            ..
+        } = self.state
+        {
+            if ps.current_index > 0 {
+                ps.current_index -= 1;
+                *records = ps.pages[ps.current_index].clone();
+                *table_cursor = 0;
+            }
         }
     }
 
@@ -347,10 +523,7 @@ impl App {
         if let Some((endpoint, id_field, title, field_names)) = info {
             let fields = field_names
                 .into_iter()
-                .map(|label| FormField {
-                    label,
-                    value: String::new(),
-                })
+                .map(|label| FormField::new(label, String::new()))
                 .collect();
 
             if let AppState::Initialized {
@@ -366,6 +539,8 @@ impl App {
                     mode: FormMode::Create,
                     endpoint,
                     id_field,
+                    edit_mode: EditMode::Insert,
+                    pending_op: None,
                 });
                 *active = ActiveComponent::Popup;
             }
@@ -388,9 +563,9 @@ impl App {
                 sidebar_cursor,
                 ..
             } => models.get(*sidebar_cursor).and_then(|m| {
-                m.update_endpoint.as_ref().map(|ep| {
-                    (m.id_field.clone(), ep.clone(), format!("Edit {}", m.name))
-                })
+                m.update_endpoint
+                    .as_ref()
+                    .map(|ep| (m.id_field.clone(), ep.clone(), format!("Edit {}", m.name)))
             }),
             _ => None,
         };
@@ -412,9 +587,8 @@ impl App {
                 .map(|obj| {
                     obj.iter()
                         .filter(|(k, _)| k.as_str() != id_field)
-                        .map(|(k, v)| FormField {
-                            label: k.clone(),
-                            value: if let serde_json::Value::Array(arr) = v {
+                        .map(|(k, v)| {
+                            let value = if let serde_json::Value::Array(arr) = v {
                                 arr.iter()
                                     .map(|s| s.as_str().unwrap_or("").to_string())
                                     .collect::<Vec<_>>()
@@ -423,7 +597,8 @@ impl App {
                                 v.as_str()
                                     .map(str::to_string)
                                     .unwrap_or_else(|| v.to_string())
-                            },
+                            };
+                            FormField::new(k.clone(), value)
                         })
                         .collect()
                 })
@@ -444,6 +619,8 @@ impl App {
                     mode: FormMode::Edit,
                     endpoint,
                     id_field,
+                    edit_mode: EditMode::Insert,
+                    pending_op: None,
                 });
                 *active = ActiveComponent::Popup;
             }
@@ -466,9 +643,9 @@ impl App {
                 sidebar_cursor,
                 ..
             } => models.get(*sidebar_cursor).and_then(|m| {
-                m.delete_endpoint.as_ref().map(|ep| {
-                    (m.id_field.clone(), ep.clone(), m.display_field.clone())
-                })
+                m.delete_endpoint
+                    .as_ref()
+                    .map(|ep| (m.id_field.clone(), ep.clone(), m.display_field.clone()))
             }),
             _ => None,
         };
@@ -543,7 +720,10 @@ impl App {
                     ActiveComponent::Popup
                 };
             }
-            self.dispatch_sync(IoEvent::DeleteRecord { endpoint, record_id });
+            self.dispatch_sync(IoEvent::DeleteRecord {
+                endpoint,
+                record_id,
+            });
         }
     }
 
@@ -629,16 +809,36 @@ impl App {
         self.state = AppState::initialized(config, models);
     }
 
-    pub fn finish_fetch(&mut self, result: Result<Vec<serde_json::Value>, String>) {
+    /// `append` distinguishes a fresh fetch (model switch / refresh — resets the
+    /// page cache to just this page) from advancing past the cached frontier
+    /// (pushes a new page onto the cache). Both display the new page's records.
+    pub fn finish_fetch(&mut self, result: Result<FetchListResult, String>, append: bool) {
         if let AppState::Initialized {
             ref mut records,
             ref mut fetch_state,
             ref mut table_cursor,
+            ref mut pagination_state,
             ..
         } = self.state
         {
             match result {
-                Ok(data) => {
+                Ok(FetchListResult {
+                    records: data,
+                    next_page_state,
+                }) => {
+                    if let Some(ps) = pagination_state {
+                        if append {
+                            ps.pages.push(data.clone());
+                            ps.current_index = ps.pages.len() - 1;
+                        } else {
+                            ps.pages = vec![data.clone()];
+                            ps.current_index = 0;
+                        }
+                        ps.has_more = next_page_state.is_some();
+                        if let Some(next) = next_page_state {
+                            ps.next = next;
+                        }
+                    }
                     *records = data;
                     *table_cursor = 0;
                     *fetch_state = FetchState::Idle;
@@ -652,7 +852,11 @@ impl App {
 
     pub fn finish_post(&mut self, result: Result<(), String>) {
         let ok = result.is_ok();
-        if let AppState::Initialized { ref mut fetch_state, .. } = self.state {
+        if let AppState::Initialized {
+            ref mut fetch_state,
+            ..
+        } = self.state
+        {
             if let Err(e) = result {
                 *fetch_state = FetchState::Error(e);
             }
@@ -664,7 +868,11 @@ impl App {
 
     pub fn finish_delete(&mut self, result: Result<(), String>) {
         let ok = result.is_ok();
-        if let AppState::Initialized { ref mut fetch_state, .. } = self.state {
+        if let AppState::Initialized {
+            ref mut fetch_state,
+            ..
+        } = self.state
+        {
             if let Err(e) = result {
                 *fetch_state = FetchState::Error(e);
                 return;

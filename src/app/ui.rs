@@ -2,12 +2,11 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-    Wrap,
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui::Frame;
 
-use super::popup::{FormMode, Popup};
+use super::popup::{EditMode, FormField, FormMode, Popup};
 use super::state::{ActiveComponent, AppState, FetchState};
 use crate::app::App;
 
@@ -76,25 +75,28 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn draw_main(frame: &mut Frame, area: Rect, state: &AppState) {
-    let (models, sidebar_cursor, records, fetch_state, table_cursor, active) = match state {
-        AppState::Initialized {
-            models,
-            sidebar_cursor,
-            records,
-            fetch_state,
-            table_cursor,
-            active,
-            ..
-        } => (
-            models.as_slice(),
-            *sidebar_cursor,
-            records.as_slice(),
-            fetch_state,
-            *table_cursor,
-            *active,
-        ),
-        _ => return,
-    };
+    let (models, sidebar_cursor, records, fetch_state, table_cursor, active, pagination_state) =
+        match state {
+            AppState::Initialized {
+                models,
+                sidebar_cursor,
+                records,
+                fetch_state,
+                table_cursor,
+                active,
+                pagination_state,
+                ..
+            } => (
+                models.as_slice(),
+                *sidebar_cursor,
+                records.as_slice(),
+                fetch_state,
+                *table_cursor,
+                *active,
+                pagination_state,
+            ),
+            _ => return,
+        };
 
     let focused = active == ActiveComponent::Main;
     let border_style = if focused {
@@ -103,10 +105,37 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &AppState) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let model_name = models.get(sidebar_cursor).map(|m| m.name.as_str());
+    let title = match (model_name, pagination_state) {
+        (Some(name), Some(ps)) => {
+            let status = if matches!(fetch_state, FetchState::LoadingMore) {
+                "loading…".to_string()
+            } else {
+                let can_prev = ps.current_index > 0;
+                let can_next = ps.current_index + 1 < ps.pages.len() || ps.has_more;
+                match (can_prev, can_next) {
+                    (true, true) => "H: prev · L: next".to_string(),
+                    (true, false) => "H: prev · last page".to_string(),
+                    (false, true) => "L: next".to_string(),
+                    (false, false) => "".to_string(),
+                }
+            };
+            format!(
+                " {} — page {} ({} records){} ",
+                name,
+                ps.current_index + 1,
+                records.len(),
+                if status.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", status)
+                }
+            )
+        }
+        (Some(name), None) => format!(" {} ", name),
+        (None, _) => " Records ".to_string(),
+    };
     let model = models.get(sidebar_cursor);
-    let title = model
-        .map(|m| format!(" {} ", m.name))
-        .unwrap_or_else(|| " Records ".to_string());
 
     let block = Block::default()
         .title(title)
@@ -126,7 +155,7 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &AppState) {
                 .block(block);
             frame.render_widget(p, area);
         }
-        FetchState::Idle => {
+        FetchState::Idle | FetchState::LoadingMore => {
             if records.is_empty() {
                 let hint = if model.is_some() {
                     "No records — press r to refresh"
@@ -215,8 +244,17 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
             fields,
             focused_field,
             mode,
+            edit_mode,
             ..
-        } => draw_form_popup(frame, area, title, fields, *focused_field, *mode),
+        } => draw_form_popup(
+            frame,
+            area,
+            title,
+            fields,
+            *focused_field,
+            *mode,
+            *edit_mode,
+        ),
     }
 }
 
@@ -252,9 +290,10 @@ fn draw_form_popup(
     frame: &mut Frame,
     area: Rect,
     title: &str,
-    fields: &[super::popup::FormField],
+    fields: &[FormField],
     focused_field: usize,
-    mode: FormMode,
+    _mode: FormMode,
+    edit_mode: EditMode,
 ) {
     // Compute the text width inside a field:
     // popup (64 or area.width) − 2 outer borders − 2 field borders
@@ -263,27 +302,20 @@ fn draw_form_popup(
 
     let field_heights: Vec<u16> = fields
         .iter()
-        .enumerate()
-        .map(|(i, f)| {
-            // Add cursor char to focused field so height accounts for it
-            let text = if i == focused_field {
-                format!("{}_", f.value)
-            } else {
-                f.value.clone()
-            };
-            let visual = visual_line_count(&text, inner_text_width);
+        .map(|f| {
+            let visual = visual_line_count(&f.value, inner_text_width);
             (visual as u16 + 2).max(3) // +2 for top/bottom borders
         })
         .collect();
-    let total_height =
-        (field_heights.iter().sum::<u16>() + 3).min(area.height.saturating_sub(2));
+    let total_height = (field_heights.iter().sum::<u16>() + 3).min(area.height.saturating_sub(2));
 
     let popup_area = centered_rect_abs(64, total_height, area);
     frame.render_widget(Clear, popup_area);
 
-    let hint = match mode {
-        FormMode::Create | FormMode::Edit => {
-            "[Tab] next field   [Enter] newline   [Ctrl+s] submit   [Esc] cancel"
+    let hint = match edit_mode {
+        EditMode::Insert => "-- INSERT --  [Esc] Normal mode  [Tab] next field  [Ctrl+s] submit",
+        EditMode::Normal => {
+            "-- NORMAL --  [i/a/I/A/o] insert  [hjkl] move  [w/b] word  [0/$] line  [x] del  [dd] del line  [Esc] close"
         }
     };
 
@@ -321,21 +353,21 @@ fn draw_form_popup(
         } else {
             Style::default().fg(Color::Gray)
         };
-        // Append cursor to end of last line when focused
-        let display = if is_focused {
-            format!("{}_", field.value)
+        let lines: Vec<Line> = if is_focused {
+            cursor_lines(field, value_style)
         } else {
-            field.value.clone()
+            field
+                .value
+                .split('\n')
+                .map(|l| Line::from(Span::styled(l.to_string(), value_style)))
+                .collect()
         };
-        let p = Paragraph::new(display)
-            .style(value_style)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .title(field.label.as_str())
-                    .borders(Borders::ALL)
-                    .border_style(border_style),
-            );
+        let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .title(field.label.as_str())
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        );
         frame.render_widget(p, chunks[i]);
     }
 
@@ -346,9 +378,6 @@ fn draw_form_popup(
 }
 
 fn draw_help_popup(frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(60, 22, area);
-    frame.render_widget(Clear, popup_area);
-
     let key_style = Style::default().fg(Color::Cyan);
     let desc_style = Style::default().fg(Color::Gray);
 
@@ -361,13 +390,25 @@ fn draw_help_popup(frame: &mut Frame, area: Rect) {
         ("n", "New record"),
         ("e / Enter", "Edit selected record"),
         ("d", "Delete selected record"),
+        ("L / H", "Next / previous page (paginated models)"),
         ("y", "Confirm delete"),
         ("n / Esc", "Cancel / close popup"),
         ("Tab", "Next form field"),
         ("Ctrl+s / Enter", "Submit form"),
+        ("-- form fields (vim) --", ""),
+        ("i/a/I/A/o", "Enter Insert mode"),
+        ("Esc", "Insert → Normal, then closes form"),
+        ("hjkl / arrows", "Move cursor (Normal mode)"),
+        ("w / b", "Next / previous word (Normal)"),
+        ("0 / $", "Line start / end (Normal)"),
+        ("x", "Delete char under cursor (Normal)"),
+        ("dd", "Delete current line (Normal)"),
         ("?", "Toggle this help"),
         ("q / Ctrl+c", "Quit"),
     ];
+
+    let popup_area = centered_rect(60, entries.len() as u16 + 3, area);
+    frame.render_widget(Clear, popup_area);
 
     let rows: Vec<Row> = entries
         .iter()
@@ -379,7 +420,7 @@ fn draw_help_popup(frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let widths = [Constraint::Length(18), Constraint::Min(20)];
+    let widths = [Constraint::Length(22), Constraint::Min(20)];
     let table = Table::new(rows, widths)
         .block(
             Block::default()
@@ -390,6 +431,39 @@ fn draw_help_popup(frame: &mut Frame, area: Rect) {
         .column_spacing(1);
 
     frame.render_widget(table, popup_area);
+}
+
+/// Splits `field.value` into lines, rendering the cursor row as three spans
+/// (pre-cursor, the char under the cursor reverse-video, post-cursor).
+fn cursor_lines(field: &FormField, base_style: Style) -> Vec<Line<'static>> {
+    let (cursor_row, cursor_col) = field.line_col();
+    let cursor_style = base_style.add_modifier(Modifier::REVERSED);
+
+    field
+        .value
+        .split('\n')
+        .enumerate()
+        .map(|(row, line)| {
+            if row != cursor_row {
+                return Line::from(Span::styled(line.to_string(), base_style));
+            }
+            let chars: Vec<char> = line.chars().collect();
+            let pre: String = chars.iter().take(cursor_col).collect();
+            let (at, post): (String, String) = if cursor_col < chars.len() {
+                (
+                    chars[cursor_col].to_string(),
+                    chars[cursor_col + 1..].iter().collect(),
+                )
+            } else {
+                (" ".to_string(), String::new())
+            };
+            Line::from(vec![
+                Span::styled(pre, base_style),
+                Span::styled(at, cursor_style),
+                Span::styled(post, base_style),
+            ])
+        })
+        .collect()
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {

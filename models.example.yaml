@@ -16,3 +16,41 @@ models:
     endpoint: "/users"
     id_field: "id"
     display_field: "name"
+
+  # Paginated endpoints: add an optional `pagination:` block. In the record
+  # table, press L to advance a page and H to go back (already-seen pages are
+  # cached, so H never re-fetches).
+
+  - name: "Widgets"           # page/per_page query-param pagination
+    endpoint: "/widgets"
+    id_field: "id"
+    display_field: "name"
+    pagination:
+      style: page
+      page_param: "page"        # optional, defaults to "page"
+      size_param: "per_page"    # optional, defaults to "per_page"
+      page_size: 50
+      first_page: 1             # optional, defaults to 1 (some APIs are 0-indexed)
+      # optional stop conditions (checked in this order); if both omitted,
+      # stop once the returned page has fewer than `page_size` records:
+      # total_pages_field: "meta.total_pages"
+      # has_more_field: "meta.has_more"
+
+  - name: "Orders"            # offset/limit query-param pagination
+    endpoint: "/orders"
+    id_field: "id"
+    display_field: "id"
+    pagination:
+      style: offset
+      offset_param: "offset"    # optional, defaults to "offset"
+      limit_param: "limit"      # optional, defaults to "limit"
+      limit: 100
+
+  - name: "Events"            # cursor-in-response-body pagination
+    endpoint: "/events"
+    id_field: "id"
+    display_field: "name"
+    pagination:
+      style: cursor
+      cursor_param: "cursor"                 # optional, defaults to "cursor"
+      next_cursor_field: "meta.next_cursor"  # dot-path; stop when null/absent

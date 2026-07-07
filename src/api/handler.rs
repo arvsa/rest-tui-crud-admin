@@ -24,11 +24,15 @@ impl ApiServiceHandler {
         &self,
         url: &str,
         headers: &[(String, String)],
+        query: &[(String, String)],
     ) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
         let request = async {
             let mut req = self.client.get(url);
             for (key, value) in headers {
                 req = req.header(key, value);
+            }
+            if !query.is_empty() {
+                req = req.query(query);
             }
             let res = req.send().await?;
             if !res.status().is_success() {
